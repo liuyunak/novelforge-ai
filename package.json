@@ -1,0 +1,21 @@
+{
+  "name": "novelforge",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AI-assisted long-form web novel creation workbench",
+  "scripts": {
+    "dev": "pnpm --filter \"./packages/*\" run dev",
+    "dev:server": "pnpm --filter server run dev",
+    "dev:client": "pnpm --filter client run dev",
+    "build": "pnpm --filter \"./packages/*\" run build",
+    "test:api": "tsx scripts/test-api.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.7.0",
+    "@types/node": "^20.11.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
