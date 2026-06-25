@@ -1,6 +1,5 @@
 # NovelForge - Full-stack Dockerfile for Render deployment
 # Builds client (React+Vite) and runs server (Hono+SQLite) serving frontend
-# Uses npm to avoid pnpm version compatibility issues with Node 20
 
 FROM node:20-alpine AS base
 
@@ -16,17 +15,20 @@ RUN npx vite build
 
 # ---- Stage 2: Production server ----
 FROM base AS server
-WORKDIR /app
+WORKDIR /app/packages/server
 
-# Copy server
-COPY packages/server/ ./packages/server/
+# Install server dependencies first (cached layer)
+COPY packages/server/package.json ./
+RUN npm install --omit=dev
 
-# Copy built frontend (matches path resolved by server/src/index.ts)
-COPY --from=client-build /app/packages/client/dist ./packages/client/dist
+# Copy server source
+COPY packages/server/ ./
+
+# Copy built frontend (path matches server/src/index.ts: ../../client/dist)
+COPY --from=client-build /app/packages/client/dist /app/packages/client/dist
 
 ENV NODE_ENV=production
 ENV PORT=10000
 EXPOSE 10000
 
-WORKDIR /app/packages/server
 CMD ["npx", "tsx", "src/index.ts"]
