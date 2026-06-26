@@ -35,7 +35,7 @@ export function AuditReportPanel({ fastAudit, deepAudit }: AuditReportPanelProps
   if (!fastAudit && !deepAudit) {
     return (
       <div className="h-full flex items-center justify-center">
-        <p className="text-gray-500 italic text-sm">等待审计完成...</p>
+        <p className="text-gray-500 italic text-sm">生成章节后自动显示审计结果</p>
       </div>
     );
   }

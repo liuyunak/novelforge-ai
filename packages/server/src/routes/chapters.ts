@@ -284,8 +284,9 @@ chaptersRouter.post('/novels/:id/chapters/generate', async (c) => {
     return new Response(sseStream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
       },
     });
   } catch (error: any) {
@@ -371,8 +372,9 @@ chaptersRouter.post('/novels/:id/chapters/pipeline', async (c) => {
     return new Response(sseStream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
         'X-Pipeline-Id': pipelineId,
       },
     });
@@ -417,8 +419,9 @@ chaptersRouter.post('/novels/:id/chapters/pipeline/approve', async (c) => {
     return new Response(sseStream, {
       headers: {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
         'X-Pipeline-Id': pipeline_id,
       },
     });
