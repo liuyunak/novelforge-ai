@@ -141,18 +141,18 @@ export async function runPlanningPhase(
   const state = getPipelineState(pipelineId);
   if (!state) return;
 
-  // Fast check: skip API call entirely if no API key or placeholder
-  const apiKey = process.env.DEEPSEEK_API_KEY || '';
-  if (!apiKey || apiKey === 'your-api-key-here' || apiKey === 'sk-xxx') {
-    console.log('No valid API key configured, using fallback outline for demo');
-    writer.sendEvent({ type: 'fallback', message: '使用演示数据（未配置 API Key）' });
-    updatePipelineState(pipelineId, { outline: fallbackOutline, phase: 'awaiting_approval' });
-    writer.sendEvent({ type: 'outline', data: fallbackOutline });
-    writer.sendEvent({ type: 'phase', phase: 'awaiting_approval', status: 'waiting' });
-    return;
-  }
-
   try {
+    // Fast check: skip API call entirely if no API key or placeholder
+    const apiKey = process.env.DEEPSEEK_API_KEY || '';
+    if (!apiKey || apiKey === 'your-api-key-here' || apiKey === 'sk-xxx') {
+      console.log('No valid API key configured, using fallback outline for demo');
+      writer.sendEvent({ type: 'fallback', message: '使用演示数据（未配置 API Key）' });
+      updatePipelineState(pipelineId, { outline: fallbackOutline, phase: 'awaiting_approval' });
+      writer.sendEvent({ type: 'outline', data: fallbackOutline });
+      writer.sendEvent({ type: 'phase', phase: 'awaiting_approval', status: 'waiting' });
+      return;
+    }
+
     updatePipelineState(pipelineId, { phase: 'planning' });
     writer.sendEvent({ type: 'phase', phase: 'planning', status: 'running' });
 
@@ -179,6 +179,8 @@ export async function runPlanningPhase(
       writer.sendEvent({ type: 'outline', data: fallbackOutline });
       writer.sendEvent({ type: 'phase', phase: 'awaiting_approval', status: 'waiting' });
     }
+  } finally {
+    writer.close();
   }
 }
 
@@ -305,6 +307,7 @@ async function runFallbackMode(
       deep_audit_score: deepResult.overall_score,
     },
   });
+  writer.close();
 }
 
 async function runRealMode(
@@ -432,5 +435,7 @@ async function runRealMode(
     console.error('Post-approval pipeline error:', error);
     updatePipelineState(pipelineId, { phase: 'error', error: error.message });
     writer.sendEvent({ type: 'error', message: error.message || 'Pipeline failed' });
+  } finally {
+    writer.close();
   }
 }
