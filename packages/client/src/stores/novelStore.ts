@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { PipelinePhase } from '../hooks/useSSE';
+import type { PipelinePhase } from '../services/api';
 import type { Novel, Chapter, FastAuditResult, DeepAuditResult, MemoryDetail } from '../services/api';
 
 interface NovelState {

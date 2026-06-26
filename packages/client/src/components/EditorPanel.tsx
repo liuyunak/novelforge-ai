@@ -5,7 +5,7 @@ import { OutlinePanel } from './OutlinePanel';
 import { Button } from './ui/Button';
 import { Card } from './ui/Card';
 import { startPipeline, approvePipeline } from '../services/api';
-import type { PipelinePhase } from '../hooks/useSSE';
+import type { PipelinePhase } from '../services/api';
 
 export function EditorPanel() {
   const {
@@ -20,7 +20,6 @@ export function EditorPanel() {
     setPipelinePhase,
     setPipelineId,
     setOutline,
-    appendContent,
     setContent,
     setAuditFast,
     setAuditDeep,
@@ -32,110 +31,120 @@ export function EditorPanel() {
   } = useNovelStore();
 
   const contentRef = useRef<HTMLDivElement>(null);
-  const abortRef = useRef<{ abort: () => void } | null>(null);
+  // 打字机定时器引用（替代原来的 abortRef）
+  const typewriterTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [isApproving, setIsApproving] = useState(false);
   const [displayContent, setDisplayContent] = useState('');
-  const contentBufferRef = useRef('');
-  const animationFrameRef = useRef<number | null>(null);
 
-  const handleStartPipeline = useCallback(() => {
+  /** 启动 pipeline（async 版本） */
+  const handleStartPipeline = useCallback(async () => {
     if (!currentNovel || isGenerating) return;
 
     resetPipeline();
     setIsGenerating(true);
+    setPipelinePhase('planning');
 
-    abortRef.current = startPipeline(currentNovel.id, {
-      onPhase: (phase: PipelinePhase, status: string) => {
-        setPipelinePhase(phase);
-      },
-      onOutline: (data: any) => {
-        setOutline(data);
-      },
-      onToken: (chunk: string) => {
-        appendContent(chunk);
-      },
-      onAuditFast: (data: any) => {
-        setAuditFast(data);
-      },
-      onAuditDeep: (data: any) => {
-        setAuditDeep(data);
-      },
-      onError: (err: string) => {
-        setError(err);
-        setIsGenerating(false);
-      },
-      onPipelineId: (pid: string) => {
-        setPipelineId(pid);
-      },
-      onFallback: () => {
+    try {
+      const data = await startPipeline(currentNovel.id);
+      // 收到结果：设置 pipelineId、outline，切换到等待审批阶段
+      setPipelineId(data.pipeline_id);
+      setOutline(data.outline);
+      setPipelinePhase('awaiting_approval');
+      if (data.is_fallback) {
         setIsFallbackMode(true);
-      },
-      onDone: (data: any) => {
-        setIsGenerating(false);
-      },
-    });
+      }
+    } catch (err: any) {
+      setError(err.message || 'Pipeline 启动失败');
+      setPipelinePhase('error');
+      setIsGenerating(false);
+    }
   }, [
     currentNovel,
     isGenerating,
     resetPipeline,
     setIsGenerating,
     setPipelinePhase,
+    setPipelineId,
     setOutline,
     setError,
-    setPipelineId,
     setIsFallbackMode,
   ]);
 
-  const handleApprove = useCallback(() => {
+  /** 批准大纲并生成内容（async 版本 + 打字机效果） */
+  const handleApprove = useCallback(async () => {
     if (!currentNovel || !pipelineId || isApproving) return;
 
     setIsApproving(true);
     setContent('');
     setDisplayContent('');
+    setPipelinePhase('writing');
 
-    abortRef.current = approvePipeline(currentNovel.id, pipelineId, true, {
-      onPhase: (phase: PipelinePhase, status: string) => {
-        setPipelinePhase(phase);
-      },
-      onToken: (chunk: string) => {
-        appendContent(chunk);
-      },
-      onAuditFast: (data: any) => {
-        setAuditFast(data);
-      },
-      onAuditDeep: (data: any) => {
-        setAuditDeep(data);
-      },
-      onError: (err: string) => {
-        setError(err);
-        setIsGenerating(false);
-        setIsApproving(false);
-      },
-      onFallback: () => {
-        setIsFallbackMode(true);
-      },
-      onDone: (data: any) => {
-        setIsGenerating(false);
-        setIsApproving(false);
-        if (data.chapter_id && data.chapter_num) {
-          addChapter({
-            id: data.chapter_id,
-            novel_id: currentNovel.id,
-            chapter_num: data.chapter_num,
-            title: outline?.chapter_outline?.title || `第${data.chapter_num}章`,
-            status: 'draft',
-            created_at: new Date().toISOString(),
-          });
+    try {
+      const data = await approvePipeline(currentNovel.id, pipelineId);
+
+      // 打字机效果：用 setInterval 逐字输出
+      const fullContent = data.content;
+      let charIndex = 0;
+      const charsPerTick = 5; // 每次 tick 输出的字符数
+      const tickInterval = 30; // 每 30ms 输出一批
+
+      // 清除可能存在的旧定时器
+      if (typewriterTimerRef.current) {
+        clearInterval(typewriterTimerRef.current);
+      }
+
+      typewriterTimerRef.current = setInterval(() => {
+        charIndex += charsPerTick;
+        if (charIndex >= fullContent.length) {
+          // 输出完毕
+          clearInterval(typewriterTimerRef.current!);
+          typewriterTimerRef.current = null;
+          setDisplayContent(fullContent);
+          setContent(fullContent);
+
+          // 设置审计结果
+          setAuditFast(data.fast_audit);
+          setPipelinePhase('fast_audit');
+
+          // 模拟快速检查完成后切换到深度审计
+          setTimeout(() => {
+            setAuditDeep(data.deep_audit);
+            setPipelinePhase('deep_audit');
+
+            // 模拟深度审计完成后切换到完成
+            setTimeout(() => {
+              setPipelinePhase('done');
+              setIsGenerating(false);
+              setIsApproving(false);
+
+              // 添加章节到列表
+              addChapter({
+                id: data.chapter_id,
+                novel_id: currentNovel.id,
+                chapter_num: data.chapter_num,
+                title: outline?.chapter_outline?.title || `第${data.chapter_num}章`,
+                status: 'draft',
+                created_at: new Date().toISOString(),
+              });
+            }, 800);
+          }, 800);
+        } else {
+          setDisplayContent(fullContent.slice(0, charIndex));
+          setContent(fullContent.slice(0, charIndex));
         }
-      },
-    });
+      }, tickInterval);
+    } catch (err: any) {
+      setError(err.message || 'Pipeline 审批失败');
+      setPipelinePhase('error');
+      setIsGenerating(false);
+      setIsApproving(false);
+    }
   }, [
     currentNovel,
     pipelineId,
     isApproving,
     setContent,
     setPipelinePhase,
-    appendContent,
     setAuditFast,
     setAuditDeep,
     setError,
@@ -145,48 +154,15 @@ export function EditorPanel() {
     outline,
   ]);
 
+  /** 停止生成 — 清除打字机定时器 */
   const handleStop = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
+    if (typewriterTimerRef.current) {
+      clearInterval(typewriterTimerRef.current);
+      typewriterTimerRef.current = null;
     }
     setIsGenerating(false);
     setIsApproving(false);
   }, [setIsGenerating]);
-
-  useEffect(() => {
-    if (pipelinePhase === 'writing' && contentBufferRef.current !== content) {
-      contentBufferRef.current = content;
-    }
-  }, [content, pipelinePhase]);
-
-  useEffect(() => {
-    if (pipelinePhase === 'writing') {
-      const updateDisplay = () => {
-        setDisplayContent((prev) => {
-          const remaining = content.slice(prev.length);
-          if (remaining.length === 0) {
-            animationFrameRef.current = requestAnimationFrame(updateDisplay);
-            return prev;
-          }
-          const charsToAdd = Math.ceil(remaining.length / 3) + 1;
-          const next = prev + remaining.slice(0, charsToAdd);
-          if (next.length < content.length) {
-            animationFrameRef.current = requestAnimationFrame(updateDisplay);
-          }
-          return next;
-        });
-      };
-      animationFrameRef.current = requestAnimationFrame(updateDisplay);
-      return () => {
-        if (animationFrameRef.current) {
-          cancelAnimationFrame(animationFrameRef.current);
-        }
-      };
-    } else {
-      setDisplayContent(content);
-    }
-  }, [content, pipelinePhase]);
 
   useEffect(() => {
     if (contentRef.current) {
@@ -201,8 +177,9 @@ export function EditorPanel() {
     window.addEventListener('start-pipeline', handleStartEvent);
     return () => {
       window.removeEventListener('start-pipeline', handleStartEvent);
-      if (abortRef.current) {
-        abortRef.current.abort();
+      // 组件卸载时清除定时器
+      if (typewriterTimerRef.current) {
+        clearInterval(typewriterTimerRef.current);
       }
     };
   }, [handleStartPipeline]);

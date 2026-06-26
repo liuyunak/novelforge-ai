@@ -1,4 +1,14 @@
-import type { PipelinePhase } from '../hooks/useSSE';
+// Pipeline 阶段类型（从前端本地定义，不再依赖 useSSE）
+export type PipelinePhase =
+  | 'pending'
+  | 'planning'
+  | 'awaiting_approval'
+  | 'composing'
+  | 'writing'
+  | 'fast_audit'
+  | 'deep_audit'
+  | 'done'
+  | 'error';
 
 export interface Novel {
   id: number;
@@ -121,194 +131,39 @@ export async function checkHealth(): Promise<boolean> {
   }
 }
 
-export interface PipelineCallbacks {
-  onPhase?: (phase: PipelinePhase, status: string) => void;
-  onOutline?: (data: any) => void;
-  onToken?: (chunk: string) => void;
-  onAuditFast?: (data: FastAuditResult) => void;
-  onAuditDeep?: (data: DeepAuditResult) => void;
-  onDone?: (data: any) => void;
-  onError?: (error: string) => void;
-  onPipelineId?: (pipelineId: string) => void;
-  onFallback?: () => void;
-}
+// ============ Pipeline API（普通 JSON，非 SSE）============
 
-function parseEventData(data: string): any {
-  try {
-    return JSON.parse(data);
-  } catch {
-    return data;
-  }
-}
-
-export function startPipeline(
-  novelId: number,
-  callbacks: PipelineCallbacks = {}
-): { abort: () => void } {
-  const controller = new AbortController();
-  let buffer = '';
-
-  fetch(`/api/novels/${novelId}/chapters/pipeline`, {
+/** 启动 pipeline，返回 JSON 结果 */
+export async function startPipeline(novelId: number): Promise<{
+  pipeline_id: string;
+  is_fallback: boolean;
+  outline: any;
+}> {
+  const res = await fetch(`/api/novels/${novelId}/chapters/pipeline`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({}),
-    signal: controller.signal,
-  })
-    .then(async (response) => {
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const pid = response.headers.get('X-Pipeline-Id');
-      if (pid) {
-        callbacks.onPipelineId?.(pid);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const event of events) {
-          const lines = event.split('\n');
-          let eventName = 'message';
-          let eventData = '';
-
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              eventName = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              eventData = line.slice(6).trim();
-            }
-          }
-
-          if (!eventData) continue;
-
-          const parsed = parseEventData(eventData);
-
-          if (eventName === 'phase') {
-            callbacks.onPhase?.(parsed.phase, parsed.status);
-          } else if (eventName === 'outline') {
-            callbacks.onOutline?.(parsed);
-          } else if (eventName === 'token') {
-            const chunk = typeof parsed === 'string' ? parsed : JSON.parse(eventData);
-            callbacks.onToken?.(chunk);
-          } else if (eventName === 'audit_fast') {
-            callbacks.onAuditFast?.(parsed);
-          } else if (eventName === 'audit_deep') {
-            callbacks.onAuditDeep?.(parsed);
-          } else if (eventName === 'done') {
-            callbacks.onDone?.(parsed);
-          } else if (eventName === 'fallback') {
-            callbacks.onFallback?.();
-          } else if (eventName === 'error') {
-            callbacks.onError?.(parsed?.message || 'Unknown error');
-          }
-        }
-      }
-    })
-    .catch((err) => {
-      if (err.name !== 'AbortError') {
-        callbacks.onError?.(err.message || 'Pipeline failed');
-      }
-    });
-
-  return {
-    abort: () => controller.abort(),
-  };
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to start pipeline');
+  return data;
 }
 
-export function approvePipeline(
-  novelId: number,
-  pipelineId: string,
-  approved: boolean,
-  callbacks: PipelineCallbacks = {}
-): { abort: () => void } {
-  const controller = new AbortController();
-  let buffer = '';
-
-  fetch(`/api/novels/${novelId}/chapters/pipeline/approve`, {
+/** 批准 pipeline，返回完整章节内容与审计结果 */
+export async function approvePipeline(novelId: number, pipelineId: string): Promise<{
+  content: string;
+  fast_audit: FastAuditResult;
+  deep_audit: DeepAuditResult;
+  chapter_id: number;
+  chapter_num: number;
+  total_tokens: number;
+}> {
+  const res = await fetch(`/api/novels/${novelId}/chapters/pipeline/approve`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pipeline_id: pipelineId, approved }),
-    signal: controller.signal,
-  })
-    .then(async (response) => {
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const pid = response.headers.get('X-Pipeline-Id');
-      if (pid) {
-        callbacks.onPipelineId?.(pid);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() || '';
-
-        for (const event of events) {
-          const lines = event.split('\n');
-          let eventName = 'message';
-          let eventData = '';
-
-          for (const line of lines) {
-            if (line.startsWith('event: ')) {
-              eventName = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              eventData = line.slice(6).trim();
-            }
-          }
-
-          if (!eventData) continue;
-
-          const parsed = parseEventData(eventData);
-
-          if (eventName === 'phase') {
-            callbacks.onPhase?.(parsed.phase, parsed.status);
-          } else if (eventName === 'token') {
-            const chunk = typeof parsed === 'string' ? parsed : JSON.parse(eventData);
-            callbacks.onToken?.(chunk);
-          } else if (eventName === 'audit_fast') {
-            callbacks.onAuditFast?.(parsed);
-          } else if (eventName === 'audit_deep') {
-            callbacks.onAuditDeep?.(parsed);
-          } else if (eventName === 'done') {
-            callbacks.onDone?.(parsed);
-          } else if (eventName === 'fallback') {
-            callbacks.onFallback?.();
-          } else if (eventName === 'error') {
-            callbacks.onError?.(parsed?.message || 'Unknown error');
-          }
-        }
-      }
-    })
-    .catch((err) => {
-      if (err.name !== 'AbortError') {
-        callbacks.onError?.(err.message || 'Pipeline approve failed');
-      }
-    });
-
-  return {
-    abort: () => controller.abort(),
-  };
+    body: JSON.stringify({ pipeline_id: pipelineId, approved: true }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Failed to approve pipeline');
+  return data;
 }

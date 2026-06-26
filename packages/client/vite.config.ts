@@ -1,19 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'path';
-import fs from 'fs';
-
-const fetchEventSourcePath = path.resolve(__dirname, 'node_modules/@microsoft/fetch-event-source');
-const hasFetchEventSource = fs.existsSync(fetchEventSourcePath);
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      ...(hasFetchEventSource ? {} : {
-        '@microsoft/fetch-event-source': path.resolve(__dirname, './src/utils/fetch-event-source.ts'),
-      }),
     },
   },
   server: {

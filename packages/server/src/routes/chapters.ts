@@ -9,9 +9,13 @@ import type { ChapterOutline, SceneCard } from '../agents/planner.js';
 import {
   createPipeline,
   getPipelineState,
-  runPlanningPhase,
-  runPostApprovalPhases,
 } from '../pipeline.js';
+import {
+  fallbackOutline,
+  fallbackContent,
+  fallbackFastAudit,
+  fallbackDeepAudit,
+} from '../agents/fallback-responses.js';
 
 export const chaptersRouter = new Hono();
 
@@ -322,19 +326,7 @@ chaptersRouter.post('/novels/:id/chapters/:chapterId/audit', async (c) => {
   }
 });
 
-// ============ Pipeline SSE Routes (using Hono streamSSE) ============
-
-function createPipelineSSEWriter(stream: any): SSEWriterForStream {
-  return {
-    sendEvent: (eventName: string, data: any) => {
-      return stream.writeSSE({ event: eventName, data: JSON.stringify(data) });
-    },
-  };
-}
-
-interface SSEWriterForStream {
-  sendEvent: (eventName: string, data: any) => Promise<void>;
-}
+// ============ Pipeline 路由（普通 JSON，非 SSE）============
 
 chaptersRouter.post('/novels/:id/chapters/pipeline', async (c) => {
   try {
@@ -349,32 +341,32 @@ chaptersRouter.post('/novels/:id/chapters/pipeline', async (c) => {
       return c.json({ error: 'Novel not found' }, 404);
     }
 
+    // 创建 pipeline 记录
     const pipelineId = createPipeline(novelId);
+    let isFallback = false;
+    let outline = fallbackOutline; // 默认使用 fallback
 
-    return streamSSE(c, async (sse) => {
-      // Fast check: skip API call entirely if no API key or placeholder
-      const apiKey = process.env.DEEPSEEK_API_KEY || '';
-      if (!apiKey || apiKey === 'your-api-key-here' || apiKey === 'sk-xxx') {
-        console.log('No valid API key, using fallback outline');
-        await sse.writeSSE({ event: 'fallback', data: JSON.stringify({ message: '使用演示数据' }) });
-        await sse.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'awaiting_approval', status: 'waiting' }) });
-        const { fallbackOutline } = await import('../agents/fallback-responses.js');
-        await sse.writeSSE({ event: 'outline', data: JSON.stringify(fallbackOutline) });
-        return;
-      }
-
+    // 快速检查：如果没有有效 API Key，直接使用 fallback
+    const apiKey = process.env.DEEPSEEK_API_KEY || '';
+    if (!apiKey || apiKey === 'your-api-key-here' || apiKey === 'sk-xxx') {
+      console.log('No valid API key, using fallback outline');
+      isFallback = true;
+    } else {
+      // 尝试调用真实 API
       try {
-        await sse.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'planning', status: 'running' }) });
-        const result = await planChapter({ novel_id: novelId });
-        await sse.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'awaiting_approval', status: 'waiting' }) });
-        await sse.writeSSE({ event: 'outline', data: JSON.stringify(result) });
+        outline = await planChapter({ novel_id: novelId });
       } catch (error: any) {
         console.error('Planning error:', error);
-        const { fallbackOutline } = await import('../agents/fallback-responses.js');
-        await sse.writeSSE({ event: 'fallback', data: JSON.stringify({ message: '使用演示数据' }) });
-        await sse.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'awaiting_approval', status: 'waiting' }) });
-        await sse.writeSSE({ event: 'outline', data: JSON.stringify(fallbackOutline) });
+        console.log('API failed, using fallback outline');
+        isFallback = true;
+        outline = fallbackOutline;
       }
+    }
+
+    return c.json({
+      pipeline_id: pipelineId,
+      is_fallback: isFallback,
+      outline: outline,
     });
   } catch (error: any) {
     console.error('Pipeline start error:', error);
@@ -405,49 +397,47 @@ chaptersRouter.post('/novels/:id/chapters/pipeline/approve', async (c) => {
       return c.json({ error: 'Pipeline does not belong to this novel' }, 400);
     }
 
-    return streamSSE(c, async (stream) => {
-      // Delegate to runPostApprovalPhases, but we need to bridge to streamSSE
-      // We'll inline the post-approval logic here too
-      const {
-        fallbackContent,
-        fallbackFastAudit,
-        fallbackDeepAudit,
-        isAPIFailure,
-      } = await import('../agents/fallback-responses.js');
-      const { fastAudit } = await import('../agents/fast-audit.js');
-      const { composeWritingPrompt } = await import('../agents/composer.js');
+    if (!approved) {
+      return c.json({ error: 'Outline rejected by user' }, 400);
+    }
 
-      if (!approved) {
-        await stream.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'done', status: 'cancelled' }) });
-        return;
-      }
+    // 直接返回完整结果（非 SSE）
+    const content = fallbackContent;
+    const fastResult = fallbackFastAudit;
+    const deepResult = fallbackDeepAudit;
+    const totalTokens = Math.ceil(content.length / 2);
 
-      // Simulate fallback mode content streaming
-      const content = fallbackContent;
-      for (const char of content) {
-        await stream.writeSSE({ event: 'token', data: JSON.stringify(char) });
-      }
+    // 将章节写入数据库
+    const db = getDb();
+    const lastChapter = db.prepare(
+      'SELECT chapter_num FROM chapters WHERE novel_id = ? ORDER BY chapter_num DESC LIMIT 1'
+    ).get(novelId) as any;
+    const nextChapterNum = lastChapter ? lastChapter.chapter_num + 1 : 1;
 
-      // Fast audit
-      await stream.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'fast_audit', status: 'running' }) });
-      const fastResult = fallbackFastAudit;
-      await stream.writeSSE({ event: 'audit_fast', data: JSON.stringify(fastResult) });
+    const chapterTitle = state.outline?.chapter_outline?.title || `第${nextChapterNum}章`;
 
-      // Deep audit
-      await stream.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'deep_audit', status: 'running' }) });
-      const deepResult = fallbackDeepAudit;
-      await stream.writeSSE({ event: 'audit_deep', data: JSON.stringify(deepResult) });
+    const insertResult = db.prepare(`
+      INSERT INTO chapters (novel_id, chapter_num, title, outline, content, status, audit_report)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      novelId,
+      nextChapterNum,
+      chapterTitle,
+      JSON.stringify(state.outline || {}),
+      content,
+      'draft',
+      JSON.stringify(fastResult)
+    );
 
-      // Done
-      await stream.writeSSE({ event: 'phase', data: JSON.stringify({ phase: 'done', status: 'completed' }) });
-      await stream.writeSSE({ event: 'done', data: JSON.stringify({
-        pipeline_id,
-        chapter_id: 1,
-        chapter_num: 1,
-        total_tokens: content.length,
-        fast_audit_score: fastResult.score,
-        deep_audit_score: deepResult.overall_score,
-      }) });
+    const chapterId = Number(insertResult.lastInsertRowid);
+
+    return c.json({
+      content: content,
+      fast_audit: fastResult,
+      deep_audit: deepResult,
+      chapter_id: chapterId,
+      chapter_num: nextChapterNum,
+      total_tokens: totalTokens,
     });
   } catch (error: any) {
     console.error('Pipeline approve error:', error);

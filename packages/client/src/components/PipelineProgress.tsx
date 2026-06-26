@@ -1,4 +1,4 @@
-import type { PipelinePhase } from '../hooks/useSSE';
+import type { PipelinePhase } from '../services/api';
 
 interface PipelineProgressProps {
   phase: PipelinePhase | null;
