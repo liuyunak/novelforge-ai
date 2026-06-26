@@ -221,7 +221,7 @@ chaptersRouter.post('/novels/:id/chapters/generate', async (c) => {
     let totalTokens = 0;
 
     const sseStream = new ReadableStream({
-      async start(controller) {
+      start(controller) {
         const encoder = new TextEncoder();
 
         const sendEvent = (event: string, data: string) => {
@@ -229,53 +229,55 @@ chaptersRouter.post('/novels/:id/chapters/generate', async (c) => {
           controller.enqueue(encoder.encode(`data: ${data}\n\n`));
         };
 
-        try {
-          const reader = stream.getReader();
-          const decoder = new TextDecoder();
+        (async () => {
+          try {
+            const reader = stream.getReader();
+            const decoder = new TextDecoder();
 
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
 
-            const chunk = typeof value === 'string' ? value : decoder.decode(value);
-            fullContent += chunk;
-            totalTokens += Math.ceil(chunk.length / 2);
+              const chunk = typeof value === 'string' ? value : decoder.decode(value);
+              fullContent += chunk;
+              totalTokens += Math.ceil(chunk.length / 2);
 
-            sendEvent('token', JSON.stringify(chunk));
+              sendEvent('token', JSON.stringify(chunk));
+            }
+
+            const lastChapter = db.prepare(
+              'SELECT chapter_num FROM chapters WHERE novel_id = ? ORDER BY chapter_num DESC LIMIT 1'
+            ).get(novelId) as any;
+            const nextChapterNum = lastChapter ? lastChapter.chapter_num + 1 : 1;
+
+            const insertResult = db.prepare(`
+              INSERT INTO chapters (novel_id, chapter_num, title, outline, content, status)
+              VALUES (?, ?, ?, ?, ?, ?)
+            `).run(
+              novelId,
+              nextChapterNum,
+              chapter_outline.title || `第${nextChapterNum}章`,
+              JSON.stringify({
+                ...chapter_outline,
+                scene_cards: sceneCards,
+              }),
+              fullContent,
+              'draft'
+            );
+
+            sendEvent('done', JSON.stringify({
+              total_tokens: totalTokens,
+              chapter_id: insertResult.lastInsertRowid,
+              chapter_num: nextChapterNum,
+            }));
+
+            controller.close();
+          } catch (error: any) {
+            console.error('Stream generation error:', error);
+            sendEvent('error', JSON.stringify({ message: error.message || 'Generation failed' }));
+            controller.close();
           }
-
-          const lastChapter = db.prepare(
-            'SELECT chapter_num FROM chapters WHERE novel_id = ? ORDER BY chapter_num DESC LIMIT 1'
-          ).get(novelId) as any;
-          const nextChapterNum = lastChapter ? lastChapter.chapter_num + 1 : 1;
-
-          const insertResult = db.prepare(`
-            INSERT INTO chapters (novel_id, chapter_num, title, outline, content, status)
-            VALUES (?, ?, ?, ?, ?, ?)
-          `).run(
-            novelId,
-            nextChapterNum,
-            chapter_outline.title || `第${nextChapterNum}章`,
-            JSON.stringify({
-              ...chapter_outline,
-              scene_cards: sceneCards,
-            }),
-            fullContent,
-            'draft'
-          );
-
-          sendEvent('done', JSON.stringify({
-            total_tokens: totalTokens,
-            chapter_id: insertResult.lastInsertRowid,
-            chapter_num: nextChapterNum,
-          }));
-
-          controller.close();
-        } catch (error: any) {
-          console.error('Stream generation error:', error);
-          sendEvent('error', JSON.stringify({ message: error.message || 'Generation failed' }));
-          controller.close();
-        }
+        })();
       },
     });
 
@@ -358,9 +360,11 @@ chaptersRouter.post('/novels/:id/chapters/pipeline', async (c) => {
     const pipelineId = createPipeline(novelId);
 
     const sseStream = new ReadableStream({
-      async start(controller) {
+      start(controller) {
         const writer = createSSEWriter(controller);
-        await runPlanningPhase(pipelineId, writer);
+        runPlanningPhase(pipelineId, writer).catch((err) => {
+          console.error('Planning phase error:', err);
+        });
       },
     });
 
@@ -402,9 +406,11 @@ chaptersRouter.post('/novels/:id/chapters/pipeline/approve', async (c) => {
     }
 
     const sseStream = new ReadableStream({
-      async start(controller) {
+      start(controller) {
         const writer = createSSEWriter(controller);
-        await runPostApprovalPhases(pipeline_id, writer, !!approved);
+        runPostApprovalPhases(pipeline_id, writer, !!approved).catch((err) => {
+          console.error('Post-approval phase error:', err);
+        });
       },
     });
 
