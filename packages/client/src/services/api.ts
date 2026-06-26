@@ -38,7 +38,7 @@ export interface DeepAuditDimension {
 
 export interface DeepAuditResult {
   overall_score: number;
-  scores: DeepAuditDimension[];
+  scores: Record<string, number> | DeepAuditDimension[];
   suggestions: string[];
 }
 

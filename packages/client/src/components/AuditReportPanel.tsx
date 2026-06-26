@@ -10,8 +10,10 @@ interface AuditReportPanelProps {
 const dimensionLabels: Record<string, string> = {
   character_consistency: '角色一致性',
   plot_logic: '情节逻辑',
+  ai_taste: 'AI味',
   ai_flavor: 'AI味',
   narrative_rhythm: '叙事节奏',
+  pacing: '叙事节奏',
   style_match: '风格匹配',
 };
 
@@ -107,27 +109,22 @@ export function AuditReportPanel({ fastAudit, deepAudit }: AuditReportPanelProps
           </div>
 
           <div className="space-y-3 mb-4">
-            {deepAudit.scores.map((dim, index) => {
-              const label = dimensionLabels[dim.name] || dim.name;
-              const barWidth = Math.min(dim.score * 10, 100);
-
-              return (
-                <div key={index}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm text-gray-300">{label}</span>
-                    <span className={`text-sm font-medium ${getScoreTextColor(dim.score)}`}>
-                      {dim.score}
-                    </span>
-                  </div>
-                  <div className="h-2 bg-dark-elevated rounded-full overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all duration-500 ${getScoreColor(dim.score)}`}
-                      style={{ width: `${barWidth}%` }}
-                    />
-                  </div>
+            {getDeepAuditEntries(deepAudit).map(({ label, value }, index) => (
+              <div key={index}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-gray-300">{label}</span>
+                  <span className={`text-sm font-medium ${getScoreTextColor(value)}`}>
+                    {value}
+                  </span>
                 </div>
-              );
-            })}
+                <div className="h-2 bg-dark-elevated rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-500 ${getScoreColor(value)}`}
+                    style={{ width: `${Math.min(value * 10, 100)}%` }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
 
           <div className="pt-3 border-t border-dark-border">
@@ -145,4 +142,15 @@ export function AuditReportPanel({ fastAudit, deepAudit }: AuditReportPanelProps
       )}
     </div>
   );
+}
+
+function getDeepAuditEntries(deepAudit: DeepAuditResult): { label: string; value: number }[] {
+  const scores = deepAudit.scores;
+  if (Array.isArray(scores)) {
+    return scores.map((dim) => ({ label: dimensionLabels[dim.name] || dim.name, value: dim.score }));
+  }
+  return Object.entries(scores).map(([key, value]) => ({
+    label: dimensionLabels[key] || key,
+    value: value as number,
+  }));
 }
